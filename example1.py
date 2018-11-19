@@ -85,6 +85,9 @@ def train_model(dataloaders, image_datasets, model, criterion, optimizer, schedu
 
             # Iterate over data.
             for inputs, labels in dataloaders[phase]:
+                print('{} {} {} {}'.format(type(inputs), inputs.shape, type(labels), labels))
+                #print('{} {}'.format(inputs.shape, labels.shape))
+                #print('{}'.format(labels))
                 inputs = inputs.to(device)
                 labels = labels.to(device)
 

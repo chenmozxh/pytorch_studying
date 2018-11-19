@@ -6,14 +6,18 @@ import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.autograd import Variable
 from torchvision import  models, transforms
-
+import copy
+#from train_model import train_model
 import time
 import os
 from torch.utils.data import Dataset
 
 from PIL import Image
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 # use PIL Image to read image
 def default_loader(path):
     try:
@@ -31,10 +35,10 @@ class customData(Dataset):
             self.img_label = [int(line.strip().split('\t')[-1]) for line in lines]
             #self.img_name = [os.path.join(img_path, line.strip()[:-2]) for line in lines]
             #self.img_label = [int(line.strip()[-1:]) for line in lines]
-        print(len(self.img_name))
-        print(self.img_name)
-        print(len(self.img_label))
-        print(self.img_label)
+        #print(len(self.img_name))
+        #print(self.img_name)
+        #print(len(self.img_label))
+        #print(self.img_label)
         self.data_transforms = data_transforms
         self.dataset = dataset
         self.loader = loader
@@ -54,81 +58,54 @@ class customData(Dataset):
                 print("Cannot transform image: {}".format(img_name))
         return img, label
 
-def train_model(model, criterion, optimizer, scheduler, num_epochs, use_gpu):
+#    train_model(dataloaders, image_datasets, model_ft, criterion, optimizer_ft, exp_lr_scheduler, num_epochs=25)
+def train_model(dataloaders, image_datasets, model, criterion, optimizer, scheduler, num_epochs=25):
+    dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
     since = time.time()
-
-    best_model_wts = model.state_dict()
+    best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
 
     for epoch in range(num_epochs):
-        begin_time = time.time()
-        count_batch = 0
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
-        print('-' * 10)
-
+        print('-' * 30)
         # Each epoch has a training and validation phase
         for phase in ['train', 'val']:
             if phase == 'train':
                 scheduler.step()
-                model.train(True)  # Set model to training mode
+                model.train()  # Set model to training mode
             else:
-                model.train(False)  # Set model to evaluate mode
+                model.eval()   # Set model to evaluate mode
 
             running_loss = 0.0
             running_corrects = 0
-
             # Iterate over data.
-            for data in dataloders[phase]:
-                count_batch += 1
-                # get the inputs
-                inputs, labels = data
-
-                # wrap them in Variable
-                if use_gpu:
-                    inputs = Variable(inputs.cuda())
-                    labels = Variable(labels.cuda())
-                else:
-                    inputs, labels = Variable(inputs), Variable(labels)
-
+            for inputs, labels in dataloaders[phase]:
+                inputs = inputs.to(device)
+                labels = labels.to(device)
                 # zero the parameter gradients
                 optimizer.zero_grad()
-
                 # forward
-                outputs = model(inputs)
-                _, preds = torch.max(outputs.data, 1)
-                loss = criterion(outputs, labels)
+                # track history if only in train
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    loss = criterion(outputs, labels)
 
-                # backward + optimize only if in training phase
-                if phase == 'train':
-                    loss.backward()
-                    optimizer.step()
+                    # backward + optimize only if in training phase
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
                 # statistics
-                running_loss += loss.data[0]
+                running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data)
-
-                # print result every 10 batch
-                if count_batch%10 == 0:
-                    batch_loss = running_loss / (batch_size*count_batch)
-                    batch_acc = running_corrects / (batch_size*count_batch)
-                    print('{} Epoch [{}] Batch [{}] Loss: {:.4f} Acc: {:.4f} Time: {:.4f}s'. \
-                          format(phase, epoch, count_batch, batch_loss, batch_acc, time.time()-begin_time))
-                    begin_time = time.time()
-
             epoch_loss = running_loss / dataset_sizes[phase]
-            epoch_acc = running_corrects / dataset_sizes[phase]
+            epoch_acc = running_corrects.double() / dataset_sizes[phase]
             print('{} Loss: {:.4f} Acc: {:.4f}'.format(phase, epoch_loss, epoch_acc))
-
-            # save model
-            if phase == 'train':
-                if not os.path.exists('output'):
-                    os.makedirs('output')
-                torch.save(model, 'output/resnet_epoch{}.pkl'.format(epoch))
 
             # deep copy the model
             if phase == 'val' and epoch_acc > best_acc:
                 best_acc = epoch_acc
-                best_model_wts = model.state_dict()
-
+                best_model_wts = copy.deepcopy(model.state_dict())
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(
         time_elapsed // 60, time_elapsed % 60))
@@ -136,10 +113,26 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs, use_gpu):
 
     # load best model weights
     model.load_state_dict(best_model_wts)
+
     return model
 
-if __name__ == '__main__':
+def train(dataloaders, image_datasets):
+    model_ft = models.resnet18(pretrained=True)
+    num_ftrs = model_ft.fc.in_features
+    model_ft.fc = nn.Linear(num_ftrs, 2)
+    model_ft = model_ft.to(device)
+    #model_ft = torch.nn.DataParallel(model_ft)#, device_ids=[0,1])
+    criterion = nn.CrossEntropyLoss()
+    # Observe that all parameters are being optimized
+    optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
+    # Decay LR by a factor of 0.1 every 7 epochs
+    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
+    model_ft = train_model(dataloaders, image_datasets, model_ft, criterion, optimizer_ft, exp_lr_scheduler, num_epochs=25)
+    torch.save(model_ft,"models/best_resnet.pkl")
 
+
+def Data_loader():
+    batch_size = 4
     data_transforms = {
         'train': transforms.Compose([
             transforms.RandomResizedCrop(224),
@@ -155,51 +148,34 @@ if __name__ == '__main__':
         ]),
     }
 
-    use_gpu = torch.cuda.is_available()
-
-    batch_size = 32
-    num_class = 2
-
     image_datasets = {x: customData(img_path='hymenoptera_data_cp/',
                                     txt_path=(x + '.txt'),
                                     data_transforms=data_transforms,
                                     dataset=x) for x in ['train', 'val']}
 
     # wrap your data and label into Tensor
-    dataloders = {x: torch.utils.data.DataLoader(image_datasets[x],
+    dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x],
                                                  batch_size=batch_size,
                                                  shuffle=True) for x in ['train', 'val']}
 
     dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
 
-    # get model and replace the original fc layer with your fc layer
-    model_ft = models.resnet18(pretrained=True)
-    num_ftrs = model_ft.fc.in_features
-    model_ft.fc = nn.Linear(num_ftrs, num_class)
+    return image_datasets, dataloaders
 
-    # if use gpu
-    if use_gpu:
-        model_ft = model_ft.cuda()
+def Test_dataloaders(dataloaders):
+    print("train"*20)
+    for inputs, labels in dataloaders['train']:
+        print('{} {} {} {}'.format(type(inputs), inputs.shape, type(labels), labels.detach()))
+        #labels = torch.IntTensor([labels])
+        #print('{} {} {}'.format(type(inputs), inputs.shape, type(labels), labels.detach()))
+        #print('{}'.format(labels))
+    print("test"*20)
+    for inputs, labels in dataloaders['val']:
+        print('{} {} {} {}'.format(type(inputs), inputs.shape, type(labels), labels.detach()))
 
-    # define cost function
-    criterion = nn.CrossEntropyLoss()
+if __name__ == '__main__':
+    image_datasets, dataloaders = Data_loader()
+    #Test_dataloaders(dataloaders)
+    train(dataloaders, image_datasets)
 
-    # Observe that all parameters are being optimized
-    optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.005, momentum=0.9)
 
-    # Decay LR by a factor of 0.2 every 5 epochs
-    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=5, gamma=0.2)
-
-    # multi-GPU
-    model_ft = torch.nn.DataParallel(model_ft)#, device_ids=[0,1])
-
-    # train model
-    model_ft = train_model(model=model_ft,
-                           criterion=criterion,
-                           optimizer=optimizer_ft,
-                           scheduler=exp_lr_scheduler,
-                           num_epochs=25,
-                           use_gpu=use_gpu)
-
-    # save best model
-    torch.save(model_ft,"output/best_resnet.pkl")
