@@ -1,4 +1,8 @@
-# pytorch_studying
+# Image Classification
+1. download images from https://pytorch.org/tutorials/beginner/transfer_learning_tutorial.html
+   wget https://download.pytorch.org/tutorial/hymenoptera_data.zip
+2. unzip hymenoptera_data.zip 
+
 
 
 # Dependencies:
